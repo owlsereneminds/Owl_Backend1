@@ -218,17 +218,13 @@ router.post('/', upload.any(), async (req, res) => {
       catch (err) { console.error("❌ Failed to parse meeting JSON:", err); }
     }
 
-   
-
-    console.log("Meting", meetingMeta)
-
+  
     // Background process
-    processMeeting(files, meetingMeta)
+   await processMeeting(files, meetingMeta)
       .then(() => console.log("🎉 Meeting processed fully"))
       .catch(err => console.error("❌ Background job failed:", err));
 
-       // ✅ Immediate response
-    res.json({ ok: true, msg: "Processing started..." });
+      res.json({ ok: true, msg: "Processing finished" }); // send after done
 
   } catch (err) {
     console.error("❌ Upload route error:", err);

@@ -127,12 +127,12 @@ export async function sendAnalysisEmail(
     },
   ];
 
-  if (audioPath) {
-    attachments.push({
-      filename: audioPath.split('/').pop(),
-      path: audioPath,
-    });
-  }
+  // if (audioPath) {
+  //   attachments.push({
+  //     filename: audioPath.split('/').pop(),
+  //     path: audioPath,
+  //   });
+  // }
 
   const info = await transporter.sendMail({
     from: `"Serene Minds Owl" <${process.env.SMTP_USER}>`,

@@ -45,8 +45,12 @@ function mergeAudioFiles(inputPaths, outPath) {
 }
 
 // ---------------- Core Processor ----------------
+// ---------------- Core Processor ----------------
 async function processMeeting(files, meetingMeta) {
   const tmpPaths = [];
+  const meetingEnd = new Date();
+const durationMs = meetingEnd - new Date(meetingMeta.startTime || Date.now());
+
   try {
     const userAudio = files.find(f => f.fieldname === 'user_audio');
     const remotes = files.filter(f => f.fieldname === 'remote_audio');
@@ -63,12 +67,12 @@ async function processMeeting(files, meetingMeta) {
       tmpPaths.push(tmpPath);
     }
 
-    // Merge
+    // Merge audio files
     const mergedName = `merged-${Date.now()}-${uuidv4()}.mp3`;
     const mergedPath = path.join(os.tmpdir(), mergedName);
     await mergeAudioFiles(tmpPaths, mergedPath);
 
-    // Upload merged
+    // Upload merged audio
     const mergedBuffer = await fs.promises.readFile(mergedPath);
     const mergedKey = `merged/${mergedName}`;
     const mergedUpload = await uploadBufferToSupabase(mergedBuffer, mergedKey, 'audio/mpeg');
@@ -114,36 +118,91 @@ async function processMeeting(files, meetingMeta) {
     console.log("✅ Analysis ready:", analysis);
 
     // Send email
-    await sendAnalysisEmail(
-      hostEmail,
-      `Owl Meeting Notes - Meet with ${host || 'Patient'}`,
-      analysis,
-      mergedPath,
-      "./1.png",
-      {
-        meetingTitle: meetingMeta?.meetingInfo?.meetingTitle,
-        participants: Array.isArray(meetingMeta?.participants)
-          ? meetingMeta.participants
-          : (typeof meetingMeta?.participants === 'string'
-              ? meetingMeta.participants.split(",")
-              : []),
-        host,
+    if (hostEmail) {
+      await sendAnalysisEmail(
         hostEmail,
-        startTime: meetingMeta?.startTime,
-        endTime: meetingMeta?.endTime,
-        durationMs: meetingMeta?.durationMs
-      }
-    );
+        `Owl Meeting Notes - Meet with ${host || 'Participant'}`,
+        analysis,
+        mergedPath,
+        "./1.png",
+        {
+          meetingTitle: meetingMeta?.meetingInfo?.meetingTitle,
+          participants: Array.isArray(meetingMeta?.participants)
+            ? meetingMeta.participants
+            : (typeof meetingMeta?.participants === 'string'
+                ? meetingMeta.participants.split(",")
+                : []),
+          host,
+          hostEmail,
+          startTime: meetingMeta?.startTime,
+          endTime: meetingMeta?.endTime,
+          durationMs: meetingMeta?.durationMs
+        }
+      );
+      console.log("📧 Analysis email sent successfully.");
+    } else {
+      console.warn("⚠️ Host email not found, skipping email send");
+    }
 
-    console.log("📧 Analysis email sent successfully.");
+    // ---------------- Supabase update ----------------
+    try {
+      const meetingId = meetingMeta?.meeting_id;
+
+      // find host + participant uploads
+  const hostAudioUpload = originals.find(o => o.field === 'user_audio');
+  const participantAudios = originals.filter(o => o.field === 'remote_audio');
+
+  const hostAudioUrl = hostAudioUpload?.publicUrl || null;
+  const participantAudioUrls = participantAudios.map(p => p.publicUrl);
+
+      if (meetingId) {
+        const { error: updateError } = await supabase
+          .from('meetings')
+          .update({
+            audio_link: mergedUpload.publicUrl,
+            email_content: JSON.stringify(analysis),
+            end_time: meetingEnd.toISOString(),
+      duration_ms: durationMs,
+      host_audio: hostAudioUrl,
+      participant_audio: JSON.stringify(participantAudioUrls)
+          })
+          .eq('id', meetingId);
+      if(!meetingId)
+      {
+        console.log("No meetingId")
+        const { error: insertError } = await supabase
+          .from('meetings')
+          .insert({
+            audio_link: mergedUpload.publicUrl,
+            email_content: JSON.stringify(analysis),
+            end_time: meetingEnd.toISOString(),
+            duration_ms: durationMs,
+            host_audio: hostAudioUrl,
+            participant_audio: JSON.stringify(participantAudioUrls)
+          })
+          .eq('meeting_code', meetingMeta.meetingInfo.meetingCode);
+      }
+        if (updateError) {
+          console.error("❌ Failed to update Supabase meeting:", updateError);
+        } else {
+          console.log(`✅ Supabase row for meeting_id ${meetingId} updated with audio + analysis`);
+        }
+      } else {
+        console.warn("⚠️ No meeting_id provided, skipping Supabase update");
+      }
+    } catch (err) {
+      console.error("❌ Supabase update failed:", err);
+    }
 
   } catch (err) {
     console.error("❌ processMeeting error:", err);
   } finally {
+    // Cleanup temp files
     try { await Promise.all(tmpPaths.map(p => safeUnlink(p))); }
     catch (e) { console.warn("Cleanup warning", e); }
   }
 }
+
 
 // ---------------- Routes ----------------
 router.options('/', (req, res) => res.sendStatus(204));
@@ -161,6 +220,8 @@ router.post('/', upload.any(), async (req, res) => {
 
     // ✅ Immediate response
     res.json({ ok: true, msg: "Processing started..." });
+
+    console.log("Meting", meetingMeta)
 
     // Background process
     processMeeting(files, meetingMeta)

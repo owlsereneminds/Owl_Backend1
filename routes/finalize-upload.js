@@ -30,7 +30,7 @@ export default async function handler(req, res) {
     // insert job row
     const { data, error } = await supabase
       .from('meeting_jobs')
-      .insert([{ session_id: sessionId, meeting_id: meetingMeta?.meetingInfo?.meetingCode || null, chunk_keys: chunkKeys, meeting_meta: meetingMeta }])
+      .insert([{ session_id: sessionId, meeting_id: sessionId || null, chunk_keys: chunkKeys, meeting_meta: meetingMeta }])
       .select();
 
     if (error) throw error;

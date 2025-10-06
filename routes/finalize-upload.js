@@ -12,8 +12,17 @@ export default async function handler(req, res) {
     if (!sessionId) return res.status(400).json({ ok: false, error: 'sessionId required' });
 
     // list files in bucket under session path
-    const prefix = `recordings/${sessionId}/`;
-    const { data: listData, error: listErr } = await supabase.storage.from('meeting_recordings').list(prefix, { limit: 1000, offset: 0 });
+    const folder = `recordings/${sessionId}`;
+    const { data: listData, error: listErr } = await supabase
+      .storage
+      .from('meeting_recordings')
+      .list(folder, { limit: 1000 });
+    
+    if (listErr) throw listErr;
+    if (!listData || listData.length === 0) {
+      console.warn("⚠️ No chunks found for", folder);
+    }
+    
     if (listErr) throw listErr;
 
     // gather keys sorted by chunk index
@@ -26,6 +35,8 @@ export default async function handler(req, res) {
         return ai - bi;
       })
       .map(name => `${prefix}${name}`);
+
+      console.log("📂 Found chunks:", listData.map(f => f.name));
 
     // insert job row
     const { data, error } = await supabase

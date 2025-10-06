@@ -24,7 +24,7 @@ app.use('/api/user', userRoute);
 app.use('/api/metadata', metadataRoute);
 app.use('/api/upload', uploadRoute);
 app.use('/api/finalize', finalizeRoute);
-app.use('/api/upload-chunk', uploadChunkRoute);
+app.use('/api/upload-chunks', uploadChunkRoute);
 app.use('/api/finalize-upload', finalizeUploadRoute);
 
 const PORT = process.env.PORT || 5000;

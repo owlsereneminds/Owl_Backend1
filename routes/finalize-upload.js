@@ -1,17 +1,19 @@
 // server/finalizeUploadWasm.ts
 import { createClient } from "@supabase/supabase-js";
+import express from "express";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { v4 as uuidv4 } from "uuid";
-import { createFFmpeg, fetchFile } from "@ffmpeg/ffmpeg";
+import ffmpeg from "fluent-ffmpeg";
+import ffmpegStatic from "ffmpeg-static";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const ffmpeg = createFFmpeg({ log: true });
+ffmpeg.setFfmpegPath(ffmpegStatic);
 
 export async function finalizeUpload(sessionId, meetingMeta) {
   if (!sessionId) throw new Error("sessionId required");
@@ -41,53 +43,51 @@ export async function finalizeUpload(sessionId, meetingMeta) {
     })
     .map(name => `${folder}/${name}`);
 
-  // 3️⃣ Download chunks and prepare ffmpeg filesystem
-  if (!ffmpeg.isLoaded()) await ffmpeg.load();
-
-  const tmpFiles = [];
+// 3️⃣ Download chunks locally
+const tmpFiles = [];
   for (let i = 0; i < chunkKeys.length; i++) {
     const key = chunkKeys[i];
     const { data, error } = await supabase.storage.from("meeting_recordings").download(key);
     if (error) throw error;
 
-    const buffer = Buffer.from(await data.arrayBuffer());
-    const tmpName = `chunk-${i}.webm`;
-    ffmpeg.FS("writeFile", tmpName, buffer);
-    tmpFiles.push(tmpName);
+  const buffer = Buffer.from(await data.arrayBuffer());
+  const tmpPath = path.join(os.tmpdir(), `${Date.now()}-${uuidv4()}-chunk-${i}.webm`);
+  await fs.writeFile(tmpPath, buffer);
+  tmpFiles.push(tmpPath);
   }
 
-  // 4️⃣ Merge chunks in ffmpeg.wasm
-  // Create a text file listing all input files
-  const listFileContent = tmpFiles.map(f => `file '${f}'`).join("\n");
-  ffmpeg.FS("writeFile", "filelist.txt", Buffer.from(listFileContent));
+// 4️⃣ Merge using ffmpeg (native)
+const mergedName = `merged-${sessionId}-${uuidv4()}.mp3`;
+const mergedPath = path.join(os.tmpdir(), mergedName);
 
-  const mergedName = `merged-${sessionId}-${uuidv4()}.mp3`;
+// Create concat file list
+const listFilePath = path.join(os.tmpdir(), `list-${uuidv4()}.txt`);
+await fs.writeFile(listFilePath, tmpFiles.map(f => `file '${f}'`).join("\n"));
 
-  await ffmpeg.run(
-    "-f", "concat",
-    "-safe", "0",
-    "-i", "filelist.txt",
-    "-c:a", "libmp3lame",
-    "-q:a", "2",
-    mergedName
-  );
+await new Promise((resolve, reject) => {
+  ffmpeg()
+    .input(listFilePath)
+    .inputOptions(["-f concat", "-safe 0"])
+    .outputOptions(["-c:a libmp3lame", "-q:a 2"])
+    .save(mergedPath)
+    .on("end", resolve)
+    .on("error", reject);
+});
 
-  // 5️⃣ Read merged output
-  const mergedData = ffmpeg.FS("readFile", mergedName);
-
-  // 6️⃣ Upload to Supabase
+// 5️⃣ Upload to Supabase
   const mergedKey = `merged/${mergedName}`;
-  const { error: uploadErr } = await supabase.storage.from("meeting_recordings").upload(
-    mergedKey,
-    Buffer.from(mergedData),
-    { contentType: "audio/mpeg", upsert: true }
-  );
+const mergedBuffer = await fs.readFile(mergedPath);
+const { error: uploadErr } = await supabase.storage.from("meeting_recordings").upload(
+  mergedKey,
+  mergedBuffer,
+  { contentType: "audio/mpeg", upsert: true }
+);
   if (uploadErr) throw uploadErr;
 
   const { data: urlData } = supabase.storage.from("meeting_recordings").getPublicUrl(mergedKey);
   const publicUrl = urlData.publicUrl;
 
-  // 7️⃣ Insert job record
+// 6️⃣ Insert job record
   const { data, error: jobErr } = await supabase.from("meeting_jobs").insert([
     {
       session_id: sessionId,
@@ -107,6 +107,26 @@ export async function finalizeUpload(sessionId, meetingMeta) {
     },
   ]).select();
 
-  if (jobErr) throw jobErr;
-  return data[0];
+if (jobErr) throw jobErr;
+// cleanup temp files
+try { await fs.unlink(listFilePath); } catch {}
+for (const p of [...tmpFiles, mergedPath]) { try { await fs.unlink(p); } catch {} }
+return data[0];
 }
+
+// Express router to integrate with server.js
+const router = express.Router();
+
+router.post('/', async (req, res) => {
+  try {
+    const { sessionId, meetingMeta } = req.body || {};
+    if (!sessionId) return res.status(400).json({ ok: false, error: 'sessionId required' });
+    const job = await finalizeUpload(sessionId, meetingMeta);
+    res.json({ ok: true, job });
+  } catch (err) {
+    console.error('finalize-upload route error', err);
+    res.status(500).json({ ok: false, error: err.message || String(err) });
+  }
+});
+
+export default router;

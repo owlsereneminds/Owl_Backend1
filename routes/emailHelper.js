@@ -29,7 +29,7 @@ function formatDate(isoString) {
 }
 
 /** POST /send-email **/
-app.post("/send-email", async (req, res) => {
+app.post("/", async (req, res) => {
   try {
     const { toEmail, subject, analysis, meta = {}, duration } = req.body;
 
@@ -97,3 +97,5 @@ app.post("/send-email", async (req, res) => {
     res.status(500).json({ error: String(err) });
   }
 });
+
+export default app;

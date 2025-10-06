@@ -12,6 +12,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.15",
     "@supabase/supabase-js": "^2.57.4",
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",

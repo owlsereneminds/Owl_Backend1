@@ -8,6 +8,8 @@ import startRoute from './routes/start.js';
 // import finalizeRoute from './routes/finalize.js';
 import uploadChunkRoute from './routes/upload-chunk.js';
 import finalizeUploadRoute from './routes/finalize-upload.js';
+import sendEmailRoute from './routes/emailHelper.js';
+
 
 dotenv.config();
 

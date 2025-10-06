@@ -1,147 +1,99 @@
-import nodemailer from 'nodemailer';
-import dotenv from 'dotenv';
+import express from "express";
+import nodemailer from "nodemailer";
+import dotenv from "dotenv";
+
 dotenv.config();
 
-/**
- * Convert markdown-style bold (**text**) to HTML <b>text</b>
- */
+const app = express();
+app.use(express.json());
+
+/** Helper functions **/
 function boldify(text = "") {
-  return text.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+  return text.replace(/\*\*(.*?)\*\*/g, "<b>$1</b>");
 }
 
-/**
- * Format duration from milliseconds into h/m/s
- */
 function formatDuration(ms = 0) {
   const totalSeconds = Math.floor(ms / 1000);
-  if (totalSeconds < 60) {
-    return `${totalSeconds} sec${totalSeconds !== 1 ? "s" : ""}`;
-  }
-
+  if (totalSeconds < 60) return `${totalSeconds} sec${totalSeconds !== 1 ? "s" : ""}`;
   const totalMinutes = Math.floor(totalSeconds / 60);
-  if (totalMinutes < 60) {
-    return `${totalMinutes} min${totalMinutes !== 1 ? "s" : ""}`;
-  }
-
+  if (totalMinutes < 60) return `${totalMinutes} min${totalMinutes !== 1 ? "s" : ""}`;
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return `${hours} hr${hours !== 1 ? "s" : ""}${minutes > 0 ? ` ${minutes} min${minutes !== 1 ? "s" : ""}` : ""}`;
 }
 
-/**
- * Format ISO date string into readable form
- */
 function formatDate(isoString) {
   if (!isoString) return "N/A";
   const date = new Date(isoString);
-  return date.toLocaleString("en-IN", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
+  return date.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 }
 
-export async function sendAnalysisEmail(
-  toEmail,
-  subject,
-  analysis,
-  audioPath,
-  imagePath,
-  meta = {},
-  duration
-) {
-  if (!toEmail) throw new Error("Recipient email required");
+/** POST /send-email **/
+app.post("/send-email", async (req, res) => {
+  try {
+    const { toEmail, subject, analysis, meta = {}, duration } = req.body;
 
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: process.env.SMTP_PORT || 587,
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
+    if (!toEmail) return res.status(400).json({ error: "Recipient email required" });
 
-  // ✅ Format participants correctly
-  const participants = Array.isArray(meta.participants)
-    ? meta.participants.map(p => p.name?.split("\n")[0] || p.name || "").filter(Boolean).join(", ")
-    : meta.participants || "N/A";
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: false,
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
 
-  // ✅ Use durationMs if available
-  const formattedDuration = formatDuration(meta.durationMs || meta.duration || duration || 0);
+    const participants = Array.isArray(meta.participants)
+      ? meta.participants.map(p => p.name || "").filter(Boolean).join(", ")
+      : meta.participants || "N/A";
 
-  // ✅ Format dates properly
-  const formattedStart = formatDate(meta.startTime);
-  const formattedEnd = formatDate(meta.endTime);
-
-  // Build HTML template
-  const htmlContent = `
-  <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width:700px; margin:auto;"> 
-    <!-- Banner Image -->
-    <div style="text-align:center; margin-bottom:20px;">
-      <img src="cid:bannerImage" alt="Serene MINDS" style="max-width:100%; border-radius:8px;" /> 
-    </div>
-
-    <!-- Meeting Metadata -->
-    <div style="padding:20px; background:#fff;">
-      <p><b>Title:</b> Meet with ${meta.host || "Patient"}</p>
-      <p><b>Participants:</b> ${participants}</p>
-      <p><b>Start Time:</b> ${formattedStart}</p>
-      <p><b>End Time:</b> ${formattedEnd}</p>
-      <p><b>Duration:</b> ${formattedDuration}</p>
-    </div>
-
-    <hr style="border:none; border-top:1px solid #eee; margin:0;"/>
-
-    <!-- Analysis Sections -->
-    <div style="padding:20px; background:#fafafa;">
-      <h3 style="margin-top:0; color:#444;">Summary</h3>
-      <p>${boldify(analysis.summary) || "No summary provided"}</p>
-
-      <h3 style="color:#444;">SOAP Notes</h3>
-      <div style="background:#fff; padding:15px; border:1px solid #ddd; border-radius:6px; white-space:pre-wrap;">
-        ${boldify(analysis.soap) || "N/A"}
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width:700px; margin:auto;"> 
+        <div style="text-align:center; margin-bottom:20px;">
+          <img src="cid:bannerImage" alt="Serene MINDS" style="max-width:100%; border-radius:8px;" /> 
+        </div>
+        <div style="padding:20px; background:#fff;">
+          <p><b>Title:</b> Meet with ${meta.host || "Patient"}</p>
+          <p><b>Participants:</b> ${participants}</p>
+          <p><b>Start Time:</b> ${formatDate(meta.startTime)}</p>
+          <p><b>End Time:</b> ${formatDate(meta.endTime)}</p>
+          <p><b>Duration:</b> ${formatDuration(meta.durationMs || meta.duration || duration || 0)}</p>
+        </div>
+        <hr style="border:none; border-top:1px solid #eee; margin:0;"/>
+        <div style="padding:20px; background:#fafafa;">
+          <h3 style="margin-top:0; color:#444;">Summary</h3>
+          <p>${boldify(analysis.summary) || "No summary provided"}</p>
+          <h3 style="color:#444;">SOAP Notes</h3>
+          <div style="background:#fff; padding:15px; border:1px solid #ddd; border-radius:6px; white-space:pre-wrap;">
+            ${boldify(analysis.soap) || "N/A"}
+          </div>
+          <h3 style="color:#444;">Tips & Recommendations</h3>
+          <ul>
+            ${(analysis.tips || "").split("\n").filter(t => t.trim() !== "").map(t => `<li>${boldify(t)}</li>`).join("")}
+          </ul>
+        </div>
+        <div style="padding:15px; text-align:center; background:#f5f7fa; color:#888; font-size:12px;">
+          Generated by <b>Owl</b> · Serene MINDS
+        </div>
       </div>
+    `;
 
-      <h3 style="color:#444;">Tips & Recommendations</h3>
-      <ul>
-  ${(analysis.tips || "")
-    .split("\n")
-    .filter(t => t.trim() !== "")  // skip blank lines
-    .map(t => `<li>${boldify(t)}</li>`)
-    .join("")}
-</ul>
-    </div>
+    const attachments = [];
+    if (imagePath) {
+      attachments.push({ filename: imagePath.split("/").pop(), path: imagePath, cid: "bannerImage" });
+    }
 
-    <!-- Footer -->
-    <div style="padding:15px; text-align:center; background:#f5f7fa; color:#888; font-size:12px;">
-      Generated by <b>Owl</b> · Serene MINDS
-    </div>
-  </div>
-  `;
+    const info = await transporter.sendMail({
+      from: `"Serene Minds Owl" <${process.env.SMTP_USER}>`,
+      to: toEmail,
+      subject,
+      html: htmlContent,
+      attachments,
+    });
 
-  const attachments = [
-    {
-      filename: imagePath.split('/').pop(),
-      path: imagePath,
-      cid: 'bannerImage',
-    },
-  ];
-
-  // if (audioPath) {
-  //   attachments.push({
-  //     filename: audioPath.split('/').pop(),
-  //     path: audioPath,
-  //   });
-  // }
-
-  const info = await transporter.sendMail({
-    from: `"Serene Minds Owl" <${process.env.SMTP_USER}>`,
-    to: toEmail,
-    subject,
-    html: htmlContent,
-    attachments,
-  });
-
-  console.log("✅ Email sent:", info.messageId);
-  return info;
-}
+    console.log("✅ Email sent:", info.messageId);
+    res.json({ ok: true, messageId: info.messageId });
+  } catch (err) {
+    console.error("❌ send-email error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});

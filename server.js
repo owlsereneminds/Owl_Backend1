@@ -26,6 +26,7 @@ app.use('/api/upload', uploadRoute);
 app.use('/api/finalize', finalizeRoute);
 app.use('/api/upload-chunks', uploadChunkRoute);
 app.use('/api/finalize-upload', finalizeUploadRoute);
+app.use('/api/send-email', sendEmailRoute);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Backend running on ${PORT}`));

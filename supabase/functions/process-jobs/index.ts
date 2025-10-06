@@ -105,44 +105,28 @@ async function sendMeetingEmail(mergedAudio: string, analysis: any, job: any) {
   try {
     const meetingTitle = job.meeting_meta?.topic || job.meeting_meta?.title || `Session ${job.session_id}`;
     const subject = `📝 Meeting Summary – ${meetingTitle}`;
-    const to = job.meeting_meta?.email || EMAIL_TO;
+    const toEmail = job.meeting_meta?.email || process.env.EMAIL_TO;
 
-    const html = `
-      <div style="font-family:Arial,sans-serif;padding:16px;color:#222;line-height:1.6;">
-        <h2>🧠 ${meetingTitle}</h2>
-        <p><strong>Audio File:</strong> <a href="${mergedAudio}" target="_blank">Listen here</a></p>
-        <h3>Summary</h3>
-        <p>${analysis.summary}</p>
-        <h3>SOAP Notes</h3>
-        <pre style="background:#f9f9f9;padding:12px;border-radius:8px;">${analysis.soap}</pre>
-        <h3>Tips / Insights</h3>
-        <ul>
-          ${analysis.tips.split("\n").map((t: string) => `<li>${t}</li>`).join("")}
-        </ul>
-      </div>
-    `;
-
-    const emailRes = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
+    // Call your Node.js API
+    const resp = await fetch('https://owl-backend1.vercel.app/api/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: EMAIL_FROM,
-        to,
+        toEmail,
         subject,
-        html,
+        analysis,
+        meta: job.meeting_meta,
+        duration: job.meeting_meta?.durationMs,
       }),
     });
 
-    if (!emailRes.ok) {
-      const err = await emailRes.text();
-      console.error("❌ Email send failed:", err);
+    if (!resp.ok) {
+      const err = await resp.text();
+      console.error('❌ send-email API failed:', err);
     } else {
-      console.log("📩 Email sent successfully to", to);
+      console.log('📩 Email sent successfully via Node API to', toEmail);
     }
   } catch (err) {
-    console.error("❌ sendMeetingEmail error:", err);
+    console.error('❌ sendMeetingEmail error:', err);
   }
 }

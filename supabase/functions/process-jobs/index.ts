@@ -38,16 +38,20 @@ Deno.serve(async (_req) => {
     const mergedAudio = job.payload?.uploads?.[0]?.publicUrl;
     if (!mergedAudio) throw new Error("Merged audio URL missing in payload");
 
-    // fetch the merged audio as Blob
-    const audioRes = await fetch(mergedAudio);
-    const audioArrayBuffer = await audioRes.arrayBuffer();
-    const audioBlob = new Blob([audioArrayBuffer], { type: "audio/mpeg" });
+    // fetch the merged audio
+const audioRes = await fetch(mergedAudio);
+const audioArrayBuffer = await audioRes.arrayBuffer();
 
-    // 1️⃣ Transcribe with Whisper
-    const transcription = await openai.audio.transcriptions.create({
-      file: audioBlob,
-      model: "whisper-1",
-    });
+// ✅ must be a File object, not just Blob
+const audioFile = new File([audioArrayBuffer], "audio.mp3", { type: "audio/mpeg" });
+
+// 1️⃣ Transcribe with Whisper
+const transcription = await openai.audio.transcriptions.create({
+  file: audioFile,
+  model: "whisper-1",
+});
+
+
     const transcriptText = transcription.text;
 
     const prompts = {
@@ -105,7 +109,7 @@ async function sendMeetingEmail(mergedAudio: string, analysis: any, job: any) {
   try {
     const meetingTitle = job.meeting_meta?.topic || job.meeting_meta?.title || `Session ${job.session_id}`;
     const subject = `📝 Meeting Summary – ${meetingTitle}`;
-    const toEmail = job.meeting_meta?.email || process.env.EMAIL_TO;
+    const toEmail = job.meeting_meta?.googleUser?.email  || process.env.EMAIL_TO;
 
     // Call your Node.js API
     const resp = await fetch('https://owl-backend1.vercel.app/api/send-email', {

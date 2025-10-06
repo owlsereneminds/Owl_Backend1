@@ -34,7 +34,8 @@ export default async function handler(req, res) {
         const bi = parseInt(b.split('chunk-').pop().replace('.webm',''), 10);
         return ai - bi;
       })
-      .map(name => `${prefix}${name}`);
+      .map(name => `${folder}/${name}`);
+
 
       console.log("📂 Found chunks:", listData.map(f => f.name));
 

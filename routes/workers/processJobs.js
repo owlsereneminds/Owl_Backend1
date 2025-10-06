@@ -3,7 +3,6 @@ import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import fetch from 'node-fetch';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import { v4 as uuidv4 } from 'uuid';
@@ -18,52 +17,41 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-async function pollAndProcess() {
-  while (true) {
+// poll once and exit (cron-friendly)
+async function pollAndProcessOnce() {
     try {
-      // 1) fetch one pending job and lock it (atomic update)
       const { data: jobs, error: fetchErr } = await supabase
         .from('meeting_jobs')
         .select('*')
         .eq('status', 'pending')
         .order('created_at', { ascending: true })
         .limit(1);
-
+  
       if (fetchErr) throw fetchErr;
       if (!jobs || jobs.length === 0) {
-        await sleep(3000);
-        continue;
+        console.log("No pending jobs");
+        return;
       }
-
+  
       const job = jobs[0];
-
-      // try to set to processing
+      // lock job
       const { error: lockErr } = await supabase
         .from('meeting_jobs')
         .update({ status: 'processing', updated_at: new Date().toISOString() })
         .eq('id', job.id)
         .eq('status', 'pending');
-
-      if (lockErr) {
-        console.warn('failed to lock job', job.id, lockErr);
-        await sleep(1000);
-        continue;
-      }
-
-      try {
-        await processJob(job);
-        await supabase.from('meeting_jobs').update({ status: 'done', updated_at: new Date().toISOString() }).eq('id', job.id);
-      } catch (err) {
-        console.error('job failed', err);
-        await supabase.from('meeting_jobs').update({ status: 'failed', result: { error: String(err) }, updated_at: new Date().toISOString() }).eq('id', job.id);
-      }
+  
+      if (lockErr) return console.warn('Failed to lock job', job.id);
+  
+      await processJob(job);
+      await supabase.from('meeting_jobs').update({ status: 'done', updated_at: new Date().toISOString() }).eq('id', job.id);
     } catch (err) {
       console.error('poll error', err);
-      await sleep(3000);
     }
   }
-}
-
+  
+  pollAndProcessOnce().catch(err => { console.error(err); process.exit(1); });
+  
 async function processJob(job) {
   const tmpPaths = [];
   try {

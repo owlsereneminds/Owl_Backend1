@@ -1,18 +1,17 @@
-// server/finalizeUpload.ts
+// server/finalizeUploadWasm.ts
 import { createClient } from "@supabase/supabase-js";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { v4 as uuidv4 } from "uuid";
-import ffmpeg from "fluent-ffmpeg";
-import ffmpegStatic from "ffmpeg-static";
-
-ffmpeg.setFfmpegPath(ffmpegStatic);
+import { createFFmpeg, fetchFile } from "@ffmpeg/ffmpeg";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+const ffmpeg = createFFmpeg({ log: true });
 
 export async function finalizeUpload(sessionId, meetingMeta) {
   if (!sessionId) throw new Error("sessionId required");
@@ -42,7 +41,9 @@ export async function finalizeUpload(sessionId, meetingMeta) {
     })
     .map(name => `${folder}/${name}`);
 
-  // 3️⃣ Download chunks locally
+  // 3️⃣ Download chunks and prepare ffmpeg filesystem
+  if (!ffmpeg.isLoaded()) await ffmpeg.load();
+
   const tmpFiles = [];
   for (let i = 0; i < chunkKeys.length; i++) {
     const key = chunkKeys[i];
@@ -50,40 +51,35 @@ export async function finalizeUpload(sessionId, meetingMeta) {
     if (error) throw error;
 
     const buffer = Buffer.from(await data.arrayBuffer());
-    const tmpPath = path.join(os.tmpdir(), `${Date.now()}-${uuidv4()}-chunk-${i}.webm`);
-    await fs.writeFile(tmpPath, buffer);
-    tmpFiles.push(tmpPath);
+    const tmpName = `chunk-${i}.webm`;
+    ffmpeg.FS("writeFile", tmpName, buffer);
+    tmpFiles.push(tmpName);
   }
 
-  // 4️⃣ Merge using ffmpeg
+  // 4️⃣ Merge chunks in ffmpeg.wasm
+  // Create a text file listing all input files
+  const listFileContent = tmpFiles.map(f => `file '${f}'`).join("\n");
+  ffmpeg.FS("writeFile", "filelist.txt", Buffer.from(listFileContent));
+
   const mergedName = `merged-${sessionId}-${uuidv4()}.mp3`;
-  const mergedPath = path.join(os.tmpdir(), mergedName);
 
-  await new Promise((resolve, reject) => {
-    const fileListPath = path.join(os.tmpdir(), `list-${uuidv4()}.txt`);
-    fs.writeFileSync(fileListPath, tmpFiles.map(f => `file '${f}'`).join("\n"));
+  await ffmpeg.run(
+    "-f", "concat",
+    "-safe", "0",
+    "-i", "filelist.txt",
+    "-c:a", "libmp3lame",
+    "-q:a", "2",
+    mergedName
+  );
 
-    ffmpeg()
-      .input(fileListPath)
-      .inputOptions(["-f concat", "-safe 0"])
-      .outputOptions(["-c:a libmp3lame", "-q:a 2"])
-      .save(mergedPath)
-      .on("end", () => {
-        fs.unlinkSync(fileListPath);
-        resolve();
-      })
-      .on("error", (err) => {
-        fs.unlinkSync(fileListPath);
-        reject(err);
-      });
-  });
+  // 5️⃣ Read merged output
+  const mergedData = ffmpeg.FS("readFile", mergedName);
 
-  // 5️⃣ Upload merged audio to Supabase
-  const mergedBuffer = await fs.readFile(mergedPath);
+  // 6️⃣ Upload to Supabase
   const mergedKey = `merged/${mergedName}`;
   const { error: uploadErr } = await supabase.storage.from("meeting_recordings").upload(
     mergedKey,
-    mergedBuffer,
+    Buffer.from(mergedData),
     { contentType: "audio/mpeg", upsert: true }
   );
   if (uploadErr) throw uploadErr;
@@ -91,7 +87,7 @@ export async function finalizeUpload(sessionId, meetingMeta) {
   const { data: urlData } = supabase.storage.from("meeting_recordings").getPublicUrl(mergedKey);
   const publicUrl = urlData.publicUrl;
 
-  // 6️⃣ Insert job with payload containing only merged audio link
+  // 7️⃣ Insert job record
   const { data, error: jobErr } = await supabase.from("meeting_jobs").insert([
     {
       session_id: sessionId,
@@ -110,11 +106,6 @@ export async function finalizeUpload(sessionId, meetingMeta) {
       status: "pending",
     },
   ]).select();
-
-  // 7️⃣ Cleanup tmp files
-  for (const f of [...tmpFiles, mergedPath]) {
-    try { await fs.unlink(f); } catch {}
-  }
 
   if (jobErr) throw jobErr;
   return data[0];

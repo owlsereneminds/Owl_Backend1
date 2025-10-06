@@ -2,10 +2,7 @@ import express from "express";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import path from "path";
-import { fileURLToPath } from "url";
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const imagePath = path.join(__dirname, "1.png");
+const imagePath = "https://cvlxdzptoolrdpdnumao.supabase.co/storage/v1/object/public/meeting_recordings/1.png";
 
 dotenv.config();
 

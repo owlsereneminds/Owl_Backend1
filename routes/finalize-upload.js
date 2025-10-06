@@ -1,84 +1,112 @@
+// server/finalizeUploadWasm.ts
 import { createClient } from "@supabase/supabase-js";
+import fs from "fs/promises";
+import path from "path";
+import os from "os";
+import { v4 as uuidv4 } from "uuid";
+import { createFFmpeg, fetchFile } from "@ffmpeg/ffmpeg";
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).end();
+const ffmpeg = createFFmpeg({ log: true });
 
-  try {
-    const { sessionId, meetingMeta } = req.body;
-    if (!sessionId) return res.status(400).json({ ok: false, error: "sessionId required" });
+export async function finalizeUpload(sessionId, meetingMeta) {
+  if (!sessionId) throw new Error("sessionId required");
 
-    // list files in bucket under session path
-    const folder = `recordings/${sessionId}`;
-    const { data: listData, error: listErr } = await supabase
-      .storage
-      .from("meeting_recordings")
-      .list(folder, { limit: 1000 });
+  const folder = `recordings/${sessionId}`;
 
-    if (listErr) throw listErr;
-    if (!listData || listData.length === 0) {
-      console.warn("⚠️ No chunks found for", folder);
-    }
+  // 1️⃣ List all chunks
+  const { data: listData, error: listErr } = await supabase
+    .storage
+    .from("meeting_recordings")
+    .list(folder, { limit: 1000 });
 
-    // gather chunk keys sorted by chunk index
-    const chunkKeys = (listData || [])
-      .map(i => i.name)
-      .filter(n => n.endsWith(".webm"))
-      .sort((a, b) => {
-        const ai = parseInt(a.split("chunk-").pop().replace(".webm", ""), 10);
-        const bi = parseInt(b.split("chunk-").pop().replace(".webm", ""), 10);
-        return ai - bi;
-      })
-      .map(name => `${folder}/${name}`);
+  if (listErr) throw listErr;
+  if (!listData || listData.length === 0) {
+    console.warn("⚠️ No chunks found for", folder);
+    return;
+  }
 
-    console.log("📂 Found chunks:", chunkKeys);
+  // 2️⃣ Sort chunk keys
+  const chunkKeys = listData
+    .map(i => i.name)
+    .filter(n => n.endsWith(".webm"))
+    .sort((a, b) => {
+      const ai = parseInt((a.split("chunk-").pop() || "").replace(".webm", ""), 10);
+      const bi = parseInt((b.split("chunk-").pop() || "").replace(".webm", ""), 10);
+      return ai - bi;
+    })
+    .map(name => `${folder}/${name}`);
 
-    // build merged file path (what the edge function will produce later)
-    const mergedPath = `merged/${sessionId}-merged.webm`;
+  // 3️⃣ Download chunks and prepare ffmpeg filesystem
+  if (!ffmpeg.isLoaded()) await ffmpeg.load();
 
-    // build public URL for merged file
-    const { data: publicUrlData } = supabase.storage
-      .from("meeting_recordings")
-      .getPublicUrl(mergedPath);
-
-    console.log("📂 Public URL:", publicUrlData.publicUrl);
-
-    // ✅ build payload exactly as required
-    const payload = {
-      uploads: [
-        {
-          path: mergedPath,
-          field: "merged_audio",
-          publicUrl: publicUrlData.publicUrl,
-        },
-      ],
-      meetingMeta,
-      chunks: chunkKeys, // optional: if the edge function needs to fetch and merge
-    };
-
-    // insert job row
-    const { data, error } = await supabase
-      .from("meeting_jobs")
-      .insert([
-        {
-          session_id: sessionId,
-          meeting_id: meetingMeta?.meeting_id || sessionId || null,
-          chunk_keys: chunkKeys,
-          meeting_meta: meetingMeta,
-          payload, // ✅ now with uploads + meta
-          status: "pending",
-        },
-      ])
-      .select();
-
+  const tmpFiles = [];
+  for (let i = 0; i < chunkKeys.length; i++) {
+    const key = chunkKeys[i];
+    const { data, error } = await supabase.storage.from("meeting_recordings").download(key);
     if (error) throw error;
 
-    return res.json({ ok: true, job: data[0] });
-  } catch (err) {
-    console.error("finalize-upload error", err);
-    return res.status(500).json({ ok: false, error: err.message });
+    const buffer = Buffer.from(await data.arrayBuffer());
+    const tmpName = `chunk-${i}.webm`;
+    ffmpeg.FS("writeFile", tmpName, buffer);
+    tmpFiles.push(tmpName);
   }
+
+  // 4️⃣ Merge chunks in ffmpeg.wasm
+  // Create a text file listing all input files
+  const listFileContent = tmpFiles.map(f => `file '${f}'`).join("\n");
+  ffmpeg.FS("writeFile", "filelist.txt", Buffer.from(listFileContent));
+
+  const mergedName = `merged-${sessionId}-${uuidv4()}.mp3`;
+
+  await ffmpeg.run(
+    "-f", "concat",
+    "-safe", "0",
+    "-i", "filelist.txt",
+    "-c:a", "libmp3lame",
+    "-q:a", "2",
+    mergedName
+  );
+
+  // 5️⃣ Read merged output
+  const mergedData = ffmpeg.FS("readFile", mergedName);
+
+  // 6️⃣ Upload to Supabase
+  const mergedKey = `merged/${mergedName}`;
+  const { error: uploadErr } = await supabase.storage.from("meeting_recordings").upload(
+    mergedKey,
+    Buffer.from(mergedData),
+    { contentType: "audio/mpeg", upsert: true }
+  );
+  if (uploadErr) throw uploadErr;
+
+  const { data: urlData } = supabase.storage.from("meeting_recordings").getPublicUrl(mergedKey);
+  const publicUrl = urlData.publicUrl;
+
+  // 7️⃣ Insert job record
+  const { data, error: jobErr } = await supabase.from("meeting_jobs").insert([
+    {
+      session_id: sessionId,
+      meeting_id: meetingMeta?.meeting_id || sessionId,
+      chunk_keys: chunkKeys,
+      meeting_meta: meetingMeta,
+      payload: {
+        uploads: [
+          {
+            path: mergedKey,
+            field: "merged_audio",
+            publicUrl,
+          },
+        ],
+      },
+      status: "pending",
+    },
+  ]).select();
+
+  if (jobErr) throw jobErr;
+  return data[0];
 }

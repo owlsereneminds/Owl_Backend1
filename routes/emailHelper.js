@@ -113,7 +113,7 @@ app.post("/", async (req, res) => {
     const info = await transporter.sendMail({
       from: `"Serene Minds Owl" <${process.env.SMTP_USER}>`,
       to: toEmail,
-      Subject,
+      subject: Subject, // 👈 lowercase key
       html: htmlContent,
       attachments,
     });

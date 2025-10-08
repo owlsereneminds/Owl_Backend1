@@ -30,6 +30,29 @@ function formatDate(isoString) {
   return date.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 }
 
+function cleanParticipants(rawParticipants = []) {
+  const names = new Set();
+
+  rawParticipants.forEach(p => {
+    if (!p?.name) return;
+
+    // Extract only alphabetic/space parts, remove extra labels or duplicates
+    const cleanName = p.name
+      .split(/\n+/) // break into lines
+      .map(line => line.trim())
+      .filter(line =>
+        line &&
+        !/frame_person|Reframe|visual_effects|Backgrounds|effects|more_vert|More options/i.test(line)
+      );
+
+    // Add each unique, cleaned line to the set
+    cleanName.forEach(n => names.add(n));
+  });
+
+  return [...names];
+}
+
+
 /** POST /send-email **/
 app.post("/", async (req, res) => {
   try {
@@ -44,9 +67,12 @@ app.post("/", async (req, res) => {
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     });
 
-    const participants = Array.isArray(meta.participants)
-      ? meta.participants.map(p => p.name || "").filter(Boolean).join(", ")
-      : meta.participants || "N/A";
+    const cleanedNames = cleanParticipants(meta.participants || []);
+    const participants = cleanedNames.length > 0 ? cleanedNames.join(", ") : "N/A";
+
+    const Subject = `Meeting Summary of ${participants} Session`
+
+
 
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width:700px; margin:auto;"> 
@@ -54,7 +80,7 @@ app.post("/", async (req, res) => {
           <img src="cid:bannerImage" alt="Serene MINDS" style="max-width:100%; border-radius:8px;" /> 
         </div>
         <div style="padding:20px; background:#fff;">
-          <p><b>Title:</b> Meet with ${meta.host || "Patient"}</p>
+          <p><b>Title:</b> Meet with ${meta.googleUser.name || "Patient"}</p>
           <p><b>Participants:</b> ${participants}</p>
           <p><b>Start Time:</b> ${formatDate(meta.startTime)}</p>
           <p><b>End Time:</b> ${formatDate(meta.endTime)}</p>
@@ -87,7 +113,7 @@ app.post("/", async (req, res) => {
     const info = await transporter.sendMail({
       from: `"Serene Minds Owl" <${process.env.SMTP_USER}>`,
       to: toEmail,
-      subject,
+      Subject,
       html: htmlContent,
       attachments,
     });

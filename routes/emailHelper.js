@@ -82,8 +82,6 @@ app.post("/", async (req, res) => {
         <div style="padding:20px; background:#fff;">
           <p><b>Title:</b> Meet with ${meta.googleUser.name || "Patient"}</p>
           <p><b>Participants:</b> ${participants}</p>
-          <p><b>Start Time:</b> ${formatDate(meta.startTime)}</p>
-          <p><b>End Time:</b> ${formatDate(meta.endTime)}</p>
           <p><b>Duration:</b> ${formatDuration(meta.durationMs || meta.duration || duration || 0)}</p>
         </div>
         <hr style="border:none; border-top:1px solid #eee; margin:0;"/>

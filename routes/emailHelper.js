@@ -70,7 +70,7 @@ app.post("/", async (req, res) => {
     const cleanedNames = cleanParticipants(meta.participants || []);
     const participants = cleanedNames.length > 0 ? cleanedNames.join(", ") : "N/A";
 
-    const Subject = `Meeting Summary of ${participants} Session`
+    const Subject = `Owl Meeting Notes - ${meta.meetingInfo?.meetingCode || "Session"}`;
 
 
 
